@@ -33,7 +33,7 @@
 
 >Test Done
 
-**iter 1:**
+**Iter 1:**
 
 >cost: 2.428
 
@@ -45,7 +45,7 @@
 
 >Test Done
 
-**iter 2:**
+**Iter 2:**
 
 >cost: 2.255
 
@@ -57,7 +57,7 @@
 
 >Test Done
 
-**iter 3:**
+**Iter 3:**
 
 >cost: 2.169
 
