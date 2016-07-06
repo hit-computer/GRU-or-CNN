@@ -20,34 +20,35 @@
 实验结果
 --------------------------------------------------------
 实验所用的数据为100W个对话对，有点类似于QA语料。实验设置为90W用于训练，10W用于测试，测试数据中5W为正例，5W为负例。
+
 iter 0：
 
 >cost: 3.025
-cost time: 195146.85 s
-Test...
-Accuracy: 0.75045
-Test Done
+>cost time: 195146.85 s
+>Test...
+>Accuracy: 0.75045
+>Test Done
 
 iter 1:
 
 >cost: 2.428
-cost time: 190828.23 s
-Test...
-Accuracy: 0.79202
-Test Done
+>cost time: 190828.23 s
+>Test...
+>Accuracy: 0.79202
+>Test Done
 
 iter 2:
 
 >cost: 2.255
-cost time: 187904.05 s
-Test...
-Accuracy: 0.76932
-Test Done
+>cost time: 187904.05 s
+>Test...
+>Accuracy: 0.76932
+>Test Done
 
 iter 3:
 
 >cost: 2.169
-cost time: 155178.83 s
-Test...
-Accuracy: 0.78361
-Test Done
+>cost time: 155178.83 s
+>Test...
+>Accuracy: 0.78361
+>Test Done
