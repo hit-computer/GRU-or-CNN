@@ -72,7 +72,7 @@ def add_to_params(params, new_param):
     params.append(new_param)
     return new_param
 
-def ReadDate(file1, file2): #选90W作为训练数据，10W作为测试数据
+def ReadDate(file1, file2): #选90W作为训练数据，10W作为测试数据，请自行设定训练数据和测试数据的规模
     Que = []
     Ans = []
     allword = []
