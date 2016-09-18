@@ -18,6 +18,7 @@ vocab_size = 60000
 w_dim = 100 #词向量维度
 neg_sample = 10
 up_dim = 500 #句子联合表示向量维度
+CNN_Flag = False #是否使用CNN，为False时使用GRU
 
 def NormalInit(rng, sizeX, sizeY, scale=0.01, sparsity=-1):
     """ 
@@ -72,19 +73,29 @@ def add_to_params(params, new_param):
     params.append(new_param)
     return new_param
 
-def ReadDate(file1, file2): #选90W作为训练数据，10W作为测试数据，请自行设定训练数据和测试数据的规模
+def ReadDate(file1, file2): #选90W作为训练数据，10W作为测试数据
     Que = []
     Ans = []
     allword = []
     with open(file1,'r') as fq, open(file2,'r') as fa:
         for line in fq:
             tmp = line.split()
-            Que.append(tmp)
             allword += tmp
+            if CNN_Flag:
+                while len(tmp) < 3 and len(tmp) > 0:
+                    tmp.append('OOV')
+                Que.append(tmp)
+            else:
+                Que.append(tmp)
         for line in fa:
             tmp = line.split()
-            Ans.append(tmp)
             allword += tmp
+            if CNN_Flag:
+                while len(tmp) < 3 and len(tmp) > 0:
+                    tmp.append('OOV')
+                Ans.append(tmp)
+            else:
+                Ans.append(tmp)
     
     assert(len(Que)==len(Ans))
     traindata = []
@@ -106,7 +117,7 @@ def SoftMax(x):
     return x / T.sum(x, axis=x.ndim-1, keepdims=True)
     
 print 'Loading the data...'
-traindata, testdata, vocab = ReadDate('100.q', '100.a')#'100.q'全是question，'100.a'是对应的answers，请替换成自己的文件。
+traindata, testdata, vocab = ReadDate('100w.q', '100w.a')#'100w.q'全是question，'100w.a'是对应的answers，请替换成自己的文件。
 print len(traindata), len(testdata)
 print ' Done'
 str_to_id = dict([(j,i) for i,j in enumerate(vocab)]+[('OOV',vocab_size-1)])
@@ -143,7 +154,7 @@ class SentenceEncoder():
         h_tilde = T.tanh(T.dot(x_t, self.W_in) + T.dot(r_t * hr_tm1, self.W_hh) + self.b_hh)
         h_t = (np.float32(1.0) - z_t) * hr_tm1 + z_t * h_tilde
         
-        m_t = m_t.dimshuffle(0, 'x')
+        m_t = m_t.dimshuffle(0, 'x') #make a column out of a 1d vector (N to Nx1)
         h_t = (m_t) * h_t + (1 - m_t) * ph_t
         
         # return both reset state and non-reset state
@@ -155,7 +166,7 @@ class SentenceEncoder():
         hs_0 = prev_state
         _res, _ = theano.scan(self.GRU_sent_step,
                           sequences=[xe, mask],\
-                          outputs_info=[hs_0, None, None, None])
+                          outputs_info=[hs_0, None, None, None])#每次循环输入GRU_sent_step是一个矩阵，shape为N*w_dim(N为x的列维度)
 
         # Get the hidden state sequence
         h = _res[0] #返回f_enc函数每次调用的第一个输出值，在RGU中h[i]会作为f_enc第i+1次迭代的输入，得到h[i+1]
@@ -169,6 +180,71 @@ class SentenceEncoder():
         self.rng = np.random.RandomState(23333)
         self.init_params(word_embedding_param)
 
+        
+class SentenceEncoder_CNN(): #用CNN学习句子向量表示
+    def init_params(self, word_embedding_param):
+        # Initialzie W_emb to given word embeddings
+        assert(word_embedding_param != None)
+        self.W_emb = word_embedding_param
+
+        """ sent weights """
+        self.Filter1 = add_to_params(self.params, theano.shared(value=NormalInit(self.rng, self.rankdim, self.qdim_encoder), name='Filter1'+self.name))
+        self.Filter2 = add_to_params(self.params, theano.shared(value=NormalInit(self.rng, 2*self.rankdim, self.qdim_encoder), name='Filter2'+self.name))
+        self.Filter3 = add_to_params(self.params, theano.shared(value=NormalInit(self.rng, 3*self.rankdim, self.qdim_encoder), name='Filter3'+self.name))
+        
+        self.b_1 = add_to_params(self.params, theano.shared(value=np.zeros((self.qdim_encoder,), dtype='float32'), name='cnn_b1'+self.name))
+        self.b_2 = add_to_params(self.params, theano.shared(value=np.zeros((self.qdim_encoder,), dtype='float32'), name='cnn_b2'+self.name))
+        self.b_3 = add_to_params(self.params, theano.shared(value=np.zeros((self.qdim_encoder,), dtype='float32'), name='cnn_b3'+self.name))
+
+    # This function takes as input word indices and extracts their corresponding word embeddings
+    def approx_embedder(self, x):
+        return self.W_emb[x]
+    
+    def ConvLayer1(self, q1):
+        output = T.dot(q1, self.Filter1) + self.b_1
+        return output
+    
+    def ConvLayer2(self, q1, q2):
+        output = T.dot(T.concatenate([q1, q2], axis=1), self.Filter2) + self.b_2
+        return output
+    
+    def ConvLayer3(self, q1, q2, q3):
+        output = T.dot(T.concatenate([q1, q2, q3], axis=1), self.Filter3) + self.b_3
+        return output
+    
+    def Convolution(self, x, mask):
+        xe = self.approx_embedder(x)
+        _mask = self.tmp[mask]
+        
+        _res1, _ = theano.scan(self.ConvLayer1, sequences=[xe])
+        _res2, _ = theano.scan(self.ConvLayer2, sequences=[xe[:-1], xe[1:]])
+        _res3, _ = theano.scan(self.ConvLayer3, sequences=[xe[:-2],xe[1:-1],xe[2:]])
+        
+        hidden1 = T.tanh(T.max(_res1*_mask, axis=0)).dimshuffle('x',0,1)
+        hidden2 = T.tanh(T.max(_res2*_mask[:-1], axis=0)).dimshuffle('x',0,1)
+        hidden3 = T.tanh(T.max(_res3*_mask[:-2], axis=0)).dimshuffle('x',0,1)
+        
+        return T.mean(T.concatenate([hidden1, hidden2, hidden3], axis=0), axis=0)
+        #return hidden3
+        #return (hidden1 + hidden2 + hidden3)/3.0
+        #return x[:5]
+        #return (hidden1 + hidden2)/2.0
+    
+    def build_encoder(self, x, mask): #x是一个matrix
+        res = self.Convolution(x, mask)
+        
+        return res
+        
+    def __init__(self, word_embedding_param, name):
+        self.name = name
+        self.rankdim = w_dim
+        self.qdim_encoder = h_dim
+        self.params = []
+        self.rng = np.random.RandomState(23333)
+        self.init_params(word_embedding_param)
+        a = np.zeros((2, self.qdim_encoder))
+        a[1] = 1
+        self.tmp = theano.shared(value=a)
 
 print 'Build model...'
 rng = np.random.RandomState(23455)
@@ -182,20 +258,29 @@ M_que = T.imatrix('question')
 M_ans = T.imatrix('answer')
 M_neg = T.imatrix('neg_sample')
 
-Question_Encoder = SentenceEncoder(W_emb, 'Question')
-Answer_Encoder = SentenceEncoder(W_emb, 'Answer')
+if CNN_Flag == False:
+    Question_Encoder = SentenceEncoder(W_emb, 'Question')
+    Answer_Encoder = SentenceEncoder(W_emb, 'Answer')
 
-que_ph = theano.shared(value=np.zeros((1, h_dim), dtype='float32'), name='que_ph')
-ans_ph = theano.shared(value=np.zeros((1, h_dim), dtype='float32'), name='ans_ph')
-neg_ph = theano.shared(value=np.zeros((neg_sample, h_dim), dtype='float32'), name='neg_ph')
+    que_ph = theano.shared(value=np.zeros((1, h_dim), dtype='float32'), name='que_ph')
+    ans_ph = theano.shared(value=np.zeros((1, h_dim), dtype='float32'), name='ans_ph')
+    neg_ph = theano.shared(value=np.zeros((neg_sample, h_dim), dtype='float32'), name='neg_ph')
 
-que_h, _ = Question_Encoder.build_encoder(T_que, T.eq(M_que,1), que_ph)
-ans_h, _ = Answer_Encoder.build_encoder(T_ans, T.eq(M_ans,1), ans_ph)
-neg_h, _test_mask = Answer_Encoder.build_encoder(T_neg, T.eq(M_neg,1), neg_ph)
+    que_h, _ = Question_Encoder.build_encoder(T_que, T.eq(M_que,1), que_ph)
+    ans_h, _ = Answer_Encoder.build_encoder(T_ans, T.eq(M_ans,1), ans_ph)
+    neg_h, _test_mask = Answer_Encoder.build_encoder(T_neg, T.eq(M_neg,1), neg_ph)
 
-que_emb = que_h[-1]
-ans_emb = ans_h[-1]
-neg_emb = neg_h[-1]
+    que_emb = que_h[-1]
+    ans_emb = ans_h[-1]
+    neg_emb = neg_h[-1]
+    
+else:
+    Question_Encoder = SentenceEncoder_CNN(W_emb, 'Question')
+    Answer_Encoder = SentenceEncoder_CNN(W_emb, 'Answer')
+    
+    que_emb = Question_Encoder.build_encoder(T_que, T.eq(M_que,1))
+    ans_emb = Answer_Encoder.build_encoder(T_ans, T.eq(M_ans,1))
+    neg_emb = Answer_Encoder.build_encoder(T_neg, T.eq(M_neg,1))
 
 W_up = add_to_params(params, theano.shared(value=NormalInit(rng, 2*h_dim, up_dim), name='W_up'))
 W_up_b = add_to_params(params, theano.shared(value=np.zeros((up_dim,), dtype='float32'), name='W_up_b'))
@@ -266,7 +351,7 @@ def compute_updates(training_cost, params):
 updates = compute_updates(training_cost, params+Question_Encoder.params+Answer_Encoder.params)
 
 train_model = theano.function([T_que, T_ans, T_neg, M_que, M_ans, M_neg],[training_cost],updates=updates, on_unused_input='ignore', name="train_fn")
-#train_model = theano.function([T_que, T_ans, T_neg, M_que, M_ans, M_neg],[f_x, f_neg, cost], on_unused_input='ignore', name="train_fn")
+#train_model = theano.function([T_que, T_ans, T_neg, M_que, M_ans, M_neg],[que_emb, ans_emb, neg_emb], on_unused_input='ignore', name="train_fn")
 test_model = theano.function([T_que, T_ans, M_que, M_ans], [f_x], on_unused_input='ignore', name="train_fn")
 print 'function build finish!'
 
@@ -365,6 +450,9 @@ for step in range(iter):
         neg_mask = np.array(neg_mask, dtype=np.int32)
         
         c = train_model(que_matrix, ans_matrix, neg_matrix, que_mask, ans_mask, neg_mask)[0]
+        #print que_matrix.shape, ans_matrix.shape, neg_matrix.shape
+        #a, b, c = train_model(que_matrix, ans_matrix, neg_matrix, que_mask, ans_mask, neg_mask)
+        #print a.shape, b.shape, c.shape
         #print c
         
         if np.isinf(c) or np.isnan(c):
@@ -379,7 +467,7 @@ for step in range(iter):
     
     if step%test_freq == 0: # and step:
         print 'Test...'
-        fw_valid = open('1_VALID_%d.txt'%step, 'w')
+        fw_valid = open('2_VALID_%d.txt'%step, 'w')
         test_length = 0
         test_right = 0
         for data in testdata:
