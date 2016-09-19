@@ -102,11 +102,11 @@ def ReadDate(file1, file2): #选90W作为训练数据，10W作为测试数据
     testdata = []
     c = Counter(allword)
     vocab = [i[0] for i in c.most_common(vocab_size-1)]
-    for q,a in zip(Que[:900000],Ans[:900000]):
+    for q,a in zip(Que[:900000],Ans[:900000]): #注意：这里的90W是训练数据规模，请根据您自己的语料进行修改
         traindata.append((q,a))
-    for q,a in zip(Que[900000:950000],Ans[900000:950000]):
+    for q,a in zip(Que[900000:950000],Ans[900000:950000]):#这里的90W-95W是构建测试数据的正例
         testdata.append((q,a,1))
-    for q in Que[950000:]:
+    for q in Que[950000:]:#构建测试数据的负例
         a = Ans[random.randint(0,200000)]
         testdata.append((q,a,0))
     
@@ -123,7 +123,7 @@ print ' Done'
 str_to_id = dict([(j,i) for i,j in enumerate(vocab)]+[('OOV',vocab_size-1)])
 assert(len(str_to_id)==vocab_size)
 
-class SentenceEncoder():
+class SentenceEncoder():#使用GRU学习句子表示
     def init_params(self, word_embedding_param):
         # Initialzie W_emb to given word embeddings
         assert(word_embedding_param != None)
@@ -220,6 +220,10 @@ class SentenceEncoder_CNN(): #用CNN学习句子向量表示
         _res2, _ = theano.scan(self.ConvLayer2, sequences=[xe[:-1], xe[1:]])
         _res3, _ = theano.scan(self.ConvLayer3, sequences=[xe[:-2],xe[1:-1],xe[2:]])
         
+        """
+        _res1是一个三维tensor，x是matrix（shape是n*m：m个句子，n为最长句子包含词数目），则xe的shape为n*m*w_dim，
+        scan每次循环输入一个m*w_dim的矩阵，得到m*h_dim的矩阵，所以_res1的shape是n*m*h_dim
+        """
         hidden1 = T.tanh(T.max(_res1*_mask, axis=0)).dimshuffle('x',0,1)
         hidden2 = T.tanh(T.max(_res2*_mask[:-1], axis=0)).dimshuffle('x',0,1)
         hidden3 = T.tanh(T.max(_res3*_mask[:-2], axis=0)).dimshuffle('x',0,1)
