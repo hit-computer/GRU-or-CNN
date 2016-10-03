@@ -82,3 +82,42 @@ main.py文件里面有以下参数可以设定：
 >Accuracy: 0.78361
 
 >Test Done
+
+
+使用CNN模型，实验结果如下：
+
+**Iter 0:**
+
+>cost: 0.998
+
+>cost time: 137159.67 s
+
+>Test...
+
+>Accuracy: 0.68731
+
+>Test Done
+
+**Iter 1:**
+
+>cost: 0.753
+
+>cost time: 72665.73 s
+
+>Test...
+
+>Accuracy: 0.7221
+
+>Test Done
+
+**Iter 2:**
+
+>cost: 0.737
+
+>cost time: 68464.48 s
+
+>Test...
+
+>Accuracy: **0.75117**
+
+>Test Done
