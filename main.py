@@ -1,77 +1,30 @@
 #coding:utf-8
-import theano, argparse, random
+import theano, random
 import numpy as np
 import cPickle,time
 import theano.tensor as T
 from collections import OrderedDict, Counter
 import logging
+from utils import compute_updates, NormalInit, add_to_params
+from GRUModel import SentenceEncoder
+from CNNModel import SentenceEncoder_CNN
+
 logging.basicConfig(level=logging.DEBUG)
 
-parser = argparse.ArgumentParser(description='Coherence')
+class Configuration(object):
+    margin = 0.6 #正负例得分间隔
+    iter = 6 #迭代次数
+    learning_rate = 0.0003
+    test_freq = 1 #每迭代多少次进行一次测试
+    h_dim = 300 #句子向量维度
+    vocab_size = 60000
+    w_dim = 100 #词向量维度
+    neg_sample = 10
+    up_dim = 500 #句子联合表示向量维度
+    CNN_Flag = True #是否使用CNN，为False时使用GRU
+    save_file = 'test_res' #测试结果保存文件名
 
-margin = 0.6 #正负例得分间隔
-iter = 6 #迭代次数
-learning_rate = 0.0003
-test_freq = 1 #每迭代多少次进行一次测试
-h_dim = 300 #句子向量维度
-vocab_size = 60000
-w_dim = 100 #词向量维度
-neg_sample = 10
-up_dim = 500 #句子联合表示向量维度
-CNN_Flag = False #是否使用CNN，为False时使用GRU
-
-def NormalInit(rng, sizeX, sizeY, scale=0.01, sparsity=-1):
-    """ 
-    Normal Initialization
-    """
-    sizeX = int(sizeX)
-    sizeY = int(sizeY)
-    
-    if sparsity < 0:
-        sparsity = sizeY
-     
-    sparsity = np.minimum(sizeY, sparsity)
-    values = np.zeros((sizeX, sizeY), dtype=theano.config.floatX)
-    for dx in xrange(sizeX):
-        perm = rng.permutation(sizeY)
-        new_vals = rng.normal(loc=0, scale=scale, size=(sparsity,))
-        values[dx, perm[:sparsity]] = new_vals
-        
-    return values.astype(theano.config.floatX)
-    
-def OrthogonalInit(rng, sizeX, sizeY, sparsity=-1, scale=1):
-    """ 
-    Orthogonal Initialization
-    """
-
-    sizeX = int(sizeX)
-    sizeY = int(sizeY)
-
-    assert sizeX == sizeY, 'for orthogonal init, sizeX == sizeY'
-
-    if sparsity < 0:
-        sparsity = sizeY
-    else:
-        sparsity = np.minimum(sizeY, sparsity)
-
-    values = np.zeros((sizeX, sizeY), dtype=theano.config.floatX)
-    for dx in xrange(sizeX):
-        perm = rng.permutation(sizeY)
-        new_vals = rng.normal(loc=0, scale=scale, size=(sparsity,))
-        values[dx, perm[:sparsity]] = new_vals
-
-    # Use SciPy:
-    if sizeX*sizeY > 20000000:
-        import scipy
-        u,s,v = scipy.linalg.svd(values)
-    else:
-        u,s,v = np.linalg.svd(values)
-    values = u * scale
-    return values.astype(theano.config.floatX)
-
-def add_to_params(params, new_param):
-    params.append(new_param)
-    return new_param
+config = Configuration()
 
 def ReadDate(file1, file2): #选90W作为训练数据，10W作为测试数据
     Que = []
@@ -81,8 +34,8 @@ def ReadDate(file1, file2): #选90W作为训练数据，10W作为测试数据
         for line in fq:
             tmp = line.split()
             allword += tmp
-            if CNN_Flag:
-                while len(tmp) < 3 and len(tmp) > 0:
+            if config.CNN_Flag:
+                while len(tmp) < 3 and len(tmp) > 0: #当使用CNN模型时，需要做padding
                     tmp.append('OOV')
                 Que.append(tmp)
             else:
@@ -90,7 +43,7 @@ def ReadDate(file1, file2): #选90W作为训练数据，10W作为测试数据
         for line in fa:
             tmp = line.split()
             allword += tmp
-            if CNN_Flag:
+            if config.CNN_Flag:
                 while len(tmp) < 3 and len(tmp) > 0:
                     tmp.append('OOV')
                 Ans.append(tmp)
@@ -101,159 +54,30 @@ def ReadDate(file1, file2): #选90W作为训练数据，10W作为测试数据
     traindata = []
     testdata = []
     c = Counter(allword)
-    vocab = [i[0] for i in c.most_common(vocab_size-1)]
-    for q,a in zip(Que[:900000],Ans[:900000]): #注意：这里的90W是训练数据规模，请根据您自己的语料进行修改
+    vocab = [i[0] for i in c.most_common(config.vocab_size-1)]
+    for q,a in zip(Que[:900000],Ans[:900000]):
         traindata.append((q,a))
-    for q,a in zip(Que[900000:950000],Ans[900000:950000]):#这里的90W-95W是构建测试数据的正例
+    for q,a in zip(Que[900000:950000],Ans[900000:950000]):
         testdata.append((q,a,1))
-    for q in Que[950000:]:#构建测试数据的负例
+    for q in Que[950000:]:
         a = Ans[random.randint(0,200000)]
         testdata.append((q,a,0))
     
     return traindata, testdata, vocab
 
-def SoftMax(x):
-    x = T.exp(x - T.max(x, axis=x.ndim-1, keepdims=True))
-    return x / T.sum(x, axis=x.ndim-1, keepdims=True)
     
 print 'Loading the data...'
 traindata, testdata, vocab = ReadDate('100w.q', '100w.a')#'100w.q'全是question，'100w.a'是对应的answers，请替换成自己的文件。
 print len(traindata), len(testdata)
 print ' Done'
-str_to_id = dict([(j,i) for i,j in enumerate(vocab)]+[('OOV',vocab_size-1)])
-assert(len(str_to_id)==vocab_size)
+str_to_id = dict([(j,i) for i,j in enumerate(vocab)]+[('OOV',config.vocab_size-1)])
+assert(len(str_to_id)==config.vocab_size)
 
-class SentenceEncoder():#使用GRU学习句子表示
-    def init_params(self, word_embedding_param):
-        # Initialzie W_emb to given word embeddings
-        assert(word_embedding_param != None)
-        self.W_emb = word_embedding_param
-
-        """ sent weights """
-        self.W_in = add_to_params(self.params, theano.shared(value=NormalInit(self.rng, self.rankdim, self.qdim_encoder), name='W_in'+self.name))
-        self.W_hh = add_to_params(self.params, theano.shared(value=OrthogonalInit(self.rng, self.qdim_encoder, self.qdim_encoder), name='W_hh'+self.name))
-        self.b_hh = add_to_params(self.params, theano.shared(value=np.zeros((self.qdim_encoder,), dtype='float32'), name='b_hh'+self.name))
-        
-        self.W_in_r = add_to_params(self.params, theano.shared(value=NormalInit(self.rng, self.rankdim, self.qdim_encoder), name='W_in_r'+self.name))
-        self.W_in_z = add_to_params(self.params, theano.shared(value=NormalInit(self.rng, self.rankdim, self.qdim_encoder), name='W_in_z'+self.name))
-        self.W_hh_r = add_to_params(self.params, theano.shared(value=OrthogonalInit(self.rng, self.qdim_encoder, self.qdim_encoder), name='W_hh_r'+self.name))
-        self.W_hh_z = add_to_params(self.params, theano.shared(value=OrthogonalInit(self.rng, self.qdim_encoder, self.qdim_encoder), name='W_hh_z'+self.name))
-        self.b_z = add_to_params(self.params, theano.shared(value=np.zeros((self.qdim_encoder,), dtype='float32'), name='b_z'+self.name))
-        self.b_r = add_to_params(self.params, theano.shared(value=np.zeros((self.qdim_encoder,), dtype='float32'), name='b_r'+self.name))
-
-    # This function takes as input word indices and extracts their corresponding word embeddings
-    
-    def approx_embedder(self, x):
-        return self.W_emb[x]
-
-    def GRU_sent_step(self, x_t, m_t, ph_t):
-        hr_tm1 = ph_t
-
-        r_t = T.nnet.sigmoid(T.dot(x_t, self.W_in_r) + T.dot(hr_tm1, self.W_hh_r) + self.b_r)
-        z_t = T.nnet.sigmoid(T.dot(x_t, self.W_in_z) + T.dot(hr_tm1, self.W_hh_z) + self.b_z)
-        h_tilde = T.tanh(T.dot(x_t, self.W_in) + T.dot(r_t * hr_tm1, self.W_hh) + self.b_hh)
-        h_t = (np.float32(1.0) - z_t) * hr_tm1 + z_t * h_tilde
-        
-        m_t = m_t.dimshuffle(0, 'x') #make a column out of a 1d vector (N to Nx1)
-        h_t = (m_t) * h_t + (1 - m_t) * ph_t
-        
-        # return both reset state and non-reset state
-        return h_t, r_t, z_t, h_tilde
-
-    def build_encoder(self, x, mask, prev_state): #x是一个matrix
-        xe = self.approx_embedder(x)
-        
-        hs_0 = prev_state
-        _res, _ = theano.scan(self.GRU_sent_step,
-                          sequences=[xe, mask],\
-                          outputs_info=[hs_0, None, None, None])#每次循环输入GRU_sent_step是一个矩阵，shape为N*w_dim(N为x的列维度)
-
-        # Get the hidden state sequence
-        h = _res[0] #返回f_enc函数每次调用的第一个输出值，在RGU中h[i]会作为f_enc第i+1次迭代的输入，得到h[i+1]
-        return h, mask
-
-    def __init__(self, word_embedding_param, name):
-        self.name = name
-        self.rankdim = w_dim
-        self.qdim_encoder = h_dim
-        self.params = []
-        self.rng = np.random.RandomState(23333)
-        self.init_params(word_embedding_param)
-
-        
-class SentenceEncoder_CNN(): #用CNN学习句子向量表示
-    def init_params(self, word_embedding_param):
-        # Initialzie W_emb to given word embeddings
-        assert(word_embedding_param != None)
-        self.W_emb = word_embedding_param
-
-        """ sent weights """
-        self.Filter1 = add_to_params(self.params, theano.shared(value=NormalInit(self.rng, self.rankdim, self.qdim_encoder), name='Filter1'+self.name))
-        self.Filter2 = add_to_params(self.params, theano.shared(value=NormalInit(self.rng, 2*self.rankdim, self.qdim_encoder), name='Filter2'+self.name))
-        self.Filter3 = add_to_params(self.params, theano.shared(value=NormalInit(self.rng, 3*self.rankdim, self.qdim_encoder), name='Filter3'+self.name))
-        
-        self.b_1 = add_to_params(self.params, theano.shared(value=np.zeros((self.qdim_encoder,), dtype='float32'), name='cnn_b1'+self.name))
-        self.b_2 = add_to_params(self.params, theano.shared(value=np.zeros((self.qdim_encoder,), dtype='float32'), name='cnn_b2'+self.name))
-        self.b_3 = add_to_params(self.params, theano.shared(value=np.zeros((self.qdim_encoder,), dtype='float32'), name='cnn_b3'+self.name))
-
-    # This function takes as input word indices and extracts their corresponding word embeddings
-    def approx_embedder(self, x):
-        return self.W_emb[x]
-    
-    def ConvLayer1(self, q1):
-        output = T.dot(q1, self.Filter1) + self.b_1
-        return output
-    
-    def ConvLayer2(self, q1, q2):
-        output = T.dot(T.concatenate([q1, q2], axis=1), self.Filter2) + self.b_2
-        return output
-    
-    def ConvLayer3(self, q1, q2, q3):
-        output = T.dot(T.concatenate([q1, q2, q3], axis=1), self.Filter3) + self.b_3
-        return output
-    
-    def Convolution(self, x, mask):
-        xe = self.approx_embedder(x)
-        _mask = self.tmp[mask]
-        
-        _res1, _ = theano.scan(self.ConvLayer1, sequences=[xe])
-        _res2, _ = theano.scan(self.ConvLayer2, sequences=[xe[:-1], xe[1:]])
-        _res3, _ = theano.scan(self.ConvLayer3, sequences=[xe[:-2],xe[1:-1],xe[2:]])
-        
-        """
-        _res1是一个三维tensor，x是matrix（shape是n*m：m个句子，n为最长句子包含词数目），则xe的shape为n*m*w_dim，
-        scan每次循环输入一个m*w_dim的矩阵，得到m*h_dim的矩阵，所以_res1的shape是n*m*h_dim
-        """
-        hidden1 = T.tanh(T.max(_res1*_mask, axis=0)).dimshuffle('x',0,1)
-        hidden2 = T.tanh(T.max(_res2*_mask[:-1], axis=0)).dimshuffle('x',0,1)
-        hidden3 = T.tanh(T.max(_res3*_mask[:-2], axis=0)).dimshuffle('x',0,1)
-        
-        return T.mean(T.concatenate([hidden1, hidden2, hidden3], axis=0), axis=0)
-        #return hidden3
-        #return (hidden1 + hidden2 + hidden3)/3.0
-        #return x[:5]
-        #return (hidden1 + hidden2)/2.0
-    
-    def build_encoder(self, x, mask): #x是一个matrix
-        res = self.Convolution(x, mask)
-        
-        return res
-        
-    def __init__(self, word_embedding_param, name):
-        self.name = name
-        self.rankdim = w_dim
-        self.qdim_encoder = h_dim
-        self.params = []
-        self.rng = np.random.RandomState(23333)
-        self.init_params(word_embedding_param)
-        a = np.zeros((2, self.qdim_encoder))
-        a[1] = 1
-        self.tmp = theano.shared(value=a)
 
 print 'Build model...'
 rng = np.random.RandomState(23455)
 params = []
-W_emb = add_to_params(params, theano.shared(value=NormalInit(rng, vocab_size, w_dim), name='W_emb'))
+W_emb = add_to_params(params, theano.shared(value=NormalInit(rng, config.vocab_size, config.w_dim), name='W_emb'))
 
 T_que = T.imatrix('question')
 T_ans = T.imatrix('answer')
@@ -262,13 +86,14 @@ M_que = T.imatrix('question')
 M_ans = T.imatrix('answer')
 M_neg = T.imatrix('neg_sample')
 
-if CNN_Flag == False:
-    Question_Encoder = SentenceEncoder(W_emb, 'Question')
-    Answer_Encoder = SentenceEncoder(W_emb, 'Answer')
+if config.CNN_Flag == False:
+    print 'use GRU model...'
+    Question_Encoder = SentenceEncoder(W_emb, 'Question', config)
+    Answer_Encoder = SentenceEncoder(W_emb, 'Answer', config)
 
-    que_ph = theano.shared(value=np.zeros((1, h_dim), dtype='float32'), name='que_ph')
-    ans_ph = theano.shared(value=np.zeros((1, h_dim), dtype='float32'), name='ans_ph')
-    neg_ph = theano.shared(value=np.zeros((neg_sample, h_dim), dtype='float32'), name='neg_ph')
+    que_ph = theano.shared(value=np.zeros((1, config.h_dim), dtype='float32'), name='que_ph')
+    ans_ph = theano.shared(value=np.zeros((1, config.h_dim), dtype='float32'), name='ans_ph')
+    neg_ph = theano.shared(value=np.zeros((config.neg_sample, config.h_dim), dtype='float32'), name='neg_ph')
 
     que_h, _ = Question_Encoder.build_encoder(T_que, T.eq(M_que,1), que_ph)
     ans_h, _ = Answer_Encoder.build_encoder(T_ans, T.eq(M_ans,1), ans_ph)
@@ -279,16 +104,17 @@ if CNN_Flag == False:
     neg_emb = neg_h[-1]
     
 else:
-    Question_Encoder = SentenceEncoder_CNN(W_emb, 'Question')
-    Answer_Encoder = SentenceEncoder_CNN(W_emb, 'Answer')
+    print 'use CNN model...'
+    Question_Encoder = SentenceEncoder_CNN(W_emb, 'Question', config)
+    Answer_Encoder = SentenceEncoder_CNN(W_emb, 'Answer', config)
     
     que_emb = Question_Encoder.build_encoder(T_que, T.eq(M_que,1))
     ans_emb = Answer_Encoder.build_encoder(T_ans, T.eq(M_ans,1))
     neg_emb = Answer_Encoder.build_encoder(T_neg, T.eq(M_neg,1))
 
-W_up = add_to_params(params, theano.shared(value=NormalInit(rng, 2*h_dim, up_dim), name='W_up'))
-W_up_b = add_to_params(params, theano.shared(value=np.zeros((up_dim,), dtype='float32'), name='W_up_b'))
-Sen_U = add_to_params(params, theano.shared(value=NormalInit(rng, up_dim, 1), name='Sen_U'))
+W_up = add_to_params(params, theano.shared(value=NormalInit(rng, 2*config.h_dim, config.up_dim), name='W_up'))
+W_up_b = add_to_params(params, theano.shared(value=np.zeros((config.up_dim,), dtype='float32'), name='W_up_b'))
+Sen_U = add_to_params(params, theano.shared(value=NormalInit(rng, config.up_dim, 1), name='Sen_U'))
 Sen_b = add_to_params(params, theano.shared(value=np.zeros((1,), dtype='float32'), name='Sen_b'))
 
 join_emb = T.concatenate([que_emb, ans_emb], axis=1)
@@ -296,63 +122,13 @@ join_hidden = T.tanh(T.dot(T.concatenate([que_emb, ans_emb], axis=1), W_up)+W_up
 #join_hidden = T.tanh(T.dot(W_up, join_emb.T)+W_up_b)
 f_x = T.nnet.sigmoid(T.dot(join_hidden, Sen_U)+Sen_b)
 
-neg_join_hidden = T.tanh(T.dot(T.concatenate([T.repeat(que_emb,neg_sample,axis=0), neg_emb], axis=1), W_up)+W_up_b)
+neg_join_hidden = T.tanh(T.dot(T.concatenate([T.repeat(que_emb, config.neg_sample, axis=0), neg_emb], axis=1), W_up)+W_up_b)
 f_neg = T.nnet.sigmoid(T.dot(neg_join_hidden, Sen_U)+Sen_b)
 
-cost = T.maximum(0, margin - f_x.sum() + f_neg)
+cost = T.maximum(0, config.margin - f_x.sum() + f_neg)
 training_cost = cost.sum()
 
-def sharedX(value, name=None, borrow=False, dtype=None):
-    if dtype is None:
-        dtype = theano.config.floatX
-    return theano.shared(theano._asarray(value, dtype=dtype),
-                         name=name,
-                         borrow=borrow)
-
-def Adam(grads, lr=0.0002, b1=0.1, b2=0.001, e=1e-8):
-    updates = []
-    i = sharedX(0.)
-    i_t = i + 1.
-    fix1 = 1. - (1. - b1)**i_t
-    fix2 = 1. - (1. - b2)**i_t
-    lr_t = lr * (T.sqrt(fix2) / fix1)
-    for p, g in grads.items():
-        m = sharedX(p.get_value() * 0.)
-        v = sharedX(p.get_value() * 0.)
-        m_t = (b1 * g) + ((1. - b1) * m)
-        v_t = (b2 * T.sqr(g)) + ((1. - b2) * v)
-        g_t = m_t / (T.sqrt(v_t) + e)
-        p_t = p - (lr_t * g_t)
-        updates.append((m, m_t))
-        updates.append((v, v_t))
-        updates.append((p, p_t))
-    updates.append((i, i_t))
-    return updates
-    
-def compute_updates(training_cost, params):
-    updates = []
-     
-    grads = T.grad(training_cost, params)
-    grads = OrderedDict(zip(params, grads))
-
-    # Clip stuff
-    c = np.float32(1.)
-    clip_grads = []
-    
-    norm_gs = T.sqrt(sum(T.sum(g ** 2) for p, g in grads.items()))
-    normalization = T.switch(T.ge(norm_gs, c), c / norm_gs, np.float32(1.))
-    notfinite = T.or_(T.isnan(norm_gs), T.isinf(norm_gs))
-     
-    for p, g in grads.items():
-        clip_grads.append((p, T.switch(notfinite, np.float32(.1) * p, g * normalization)))
-    
-    grads = OrderedDict(clip_grads)
-
-    updates = Adam(grads, learning_rate)
-
-    return updates
-
-updates = compute_updates(training_cost, params+Question_Encoder.params+Answer_Encoder.params)
+updates = compute_updates(training_cost, params+Question_Encoder.params+Answer_Encoder.params, config)
 
 train_model = theano.function([T_que, T_ans, T_neg, M_que, M_ans, M_neg],[training_cost],updates=updates, on_unused_input='ignore', name="train_fn")
 #train_model = theano.function([T_que, T_ans, T_neg, M_que, M_ans, M_neg],[que_emb, ans_emb, neg_emb], on_unused_input='ignore', name="train_fn")
@@ -361,7 +137,7 @@ print 'function build finish!'
 
 
 print 'Training...'
-for step in range(iter):
+for step in range(1, config.iter+1):
     print 'iter: ',step
     cost = 0
     length = 0
@@ -383,7 +159,7 @@ for step in range(iter):
         n_traindata = len(traindata)
         neg_matrix = []
         max_lenght = 0
-        while len(nsample) < neg_sample:
+        while len(nsample) < config.neg_sample:
             _rand = random.randint(10, n_traindata-10)
             if _rand != idx and _rand not in nsample:
                 tmp = []
@@ -414,7 +190,7 @@ for step in range(iter):
         for i in range(max_lenght):
             tmp = []
             tmp_mask = []
-            for j in range(neg_sample):
+            for j in range(config.neg_sample):
                 if i < len(neg_matrix[j]):
                     tmp.append(neg_matrix[j][i])
                     tmp_mask.append(1)
@@ -469,9 +245,9 @@ for step in range(iter):
     print 'Cost: ', cost/length
     print 'cost time: ', etime-stime,'s'
     
-    if step%test_freq == 0: # and step:
+    if step%config.test_freq == 0:
         print 'Test...'
-        fw_valid = open('2_VALID_%d.txt'%step, 'w')
+        fw_valid = open(config.save_file+'_%d.txt'%step, 'w')
         test_length = 0
         test_right = 0
         for data in testdata:
@@ -514,6 +290,7 @@ for step in range(iter):
             if label == 0 and prob < 0.5:
                 test_right += 1
             fw_valid.write('Prob: ' + str(prob) + ' ' + str(label) + '\r\n')
+            #break
         accuracy = 1.0 * test_right / test_length
         fw_valid.write('\r\n'+'Accuracy: ' + str(accuracy))
         fw_valid.close()
