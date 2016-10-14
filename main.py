@@ -22,7 +22,7 @@ class Configuration(object):
     neg_sample = 10
     up_dim = 500 #句子联合表示向量维度
     CNN_Flag = True #是否使用CNN，为False时使用GRU
-    save_file = 'test_res' #测试结果保存文件名
+    save_file = 'test_res' #保存测试结果的文件名
 
 config = Configuration()
 
