@@ -33,7 +33,7 @@ class SentenceEncoder():
         r_t = T.nnet.sigmoid(T.dot(x_t, self.W_in_r) + T.dot(hr_tm1, self.W_hh_r) + self.b_r)
         z_t = T.nnet.sigmoid(T.dot(x_t, self.W_in_z) + T.dot(hr_tm1, self.W_hh_z) + self.b_z)
         h_tilde = T.tanh(T.dot(x_t, self.W_in) + T.dot(r_t * hr_tm1, self.W_hh) + self.b_hh)
-        h_t = (np.float32(1.0) - z_t) * hr_tm1 + z_t * h_tilde
+        h_t = z_t * hr_tm1 + (np.float32(1.0) - z_t) * h_tilde
         
         m_t = m_t.dimshuffle(0, 'x') #make a column out of a 1d vector (N to Nx1)
         h_t = (m_t) * h_t + (1 - m_t) * ph_t
