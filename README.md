@@ -34,11 +34,11 @@ main.py文件里面有以下参数可以设定：
 
 **Iter 0:**
 
-    cost: 3.025
-    cost time: 195146.85 s
-    Test...
-    Accuracy: 0.75045
-    Test Done
+>cost: 3.025
+>cost time: 195146.85 s
+>Test...
+>Accuracy: 0.75045
+>Test Done
 
 **Iter 1:**
 
